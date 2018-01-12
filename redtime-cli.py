@@ -10,6 +10,7 @@ import sys
 from datetime import date, datetime, timedelta
 from redminelib import Redmine
 from functools import lru_cache
+from fuzzywuzzy import process as fw_process
 from redminelib.packages import requests as redmine_requests
 from redminelib.exceptions import ResourceNotFoundError, ValidationError
 
@@ -134,13 +135,69 @@ def log(project, issue, activity, hours, description, date):
 
 
 @cli.command()
-def projects():
-    pass
+@click.argument('name', required=False)
+@click.option('--name-id', 'fmt', flag_value='{name}: {id}', default=True)
+@click.option('--id', 'fmt', flag_value='{id}')
+@click.option('--name', 'fmt', flag_value='{name}')
+@click.option('--one', 'one', flag_value=True)
+@click.option('--threshold', 'threshold', type=click.FLOAT, default=80)
+def projects(name, fmt, one, threshold):
+    projects = _projects(name, threshold)
+    if one:
+        projects = projects[:1]
+
+    for project in projects:
+        print(fmt.format_map(dict(project)))
+
+
+def _projects(name, threshold):
+    projects = redmine.project.all()
+    if name:
+        found = fw_process.extract(name, projects)
+        projects = [fst for (fst, snd) in found if snd >= threshold]
+    else:
+        projects = sorted(projects, key=lambda x: x.name)
+
+    return projects
+
+@cli.command()
+@click.argument('subject', required=False)
+@click.option('--subject-id', 'fmt', flag_value='{subject}: {id}', default=True)
+@click.option('--id', 'fmt', flag_value='{id}')
+@click.option('--subject', 'fmt', flag_value='{subject}')
+@click.option('--one', 'one', flag_value=True)
+@click.option('--threshold', 'threshold', type=click.FLOAT, default=80)
+def issues(subject, fmt, one, threshold):
+    issues = _issues(subject, threshold)
+    if one:
+        issues = issues[:1]
+
+    for issue in issues:
+        print(fmt.format_map(dict(issue)))
+
+
+def _issues(subject, threshold):
+    issues = redmine.issue.all()
+    if subject:
+        found = fw_process.extract(subject, issues)
+        issues = [fst for (fst, snd) in found if snd >= threshold]
+    else:
+        issues = sorted(issues, key=lambda x: x.subject)
+
+    return issues
 
 
 @cli.command()
-def issues():
-    pass
+@click.argument('name', required=False)
+@click.option('--name-id', 'fmt', flag_value='{name}: {id}', default=True)
+@click.option('--id', 'fmt', flag_value='{id}')
+@click.option('--name', 'fmt', flag_value='{name}')
+def activities(name, fmt):
+    if name:
+        print(fmt.format_map(dict(activity_by_name[name.lower()])))
+    else:
+        for activity in activities:
+            print(fmt.format_map(dict(activity)))
 
 
 @cli.command()
@@ -213,19 +270,6 @@ def overview(**kwargs):
         print_entry(entry)
 
     fill_blanks(last_date, kwargs['to_date'] + timedelta(days=1))
-
-
-@cli.command()
-@click.argument('name')
-@click.option('--name-id', 'fmt', flag_value='{name}: {id}', default=True)
-@click.option('--id', 'fmt', flag_value='{id}')
-@click.option('--name', 'fmt', flag_value='{name}')
-def activities(name, fmt):
-    if name:
-        print(fmt.format_map(dict(activity_by_name[name.lower()])))
-    else:
-        for activity in activities:
-            print(fmt.format_map(dict(activity)))
 
 
 if __name__ == "__main__":
