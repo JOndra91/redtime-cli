@@ -4,3 +4,4 @@ colored==1.3.5
 fuzzywuzzy==0.16.0
 python-Levenshtein==0.12.0
 python-redmine==2.0.2
+git+https://github.com/vanife/pyfscache.git

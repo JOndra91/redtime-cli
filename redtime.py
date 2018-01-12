@@ -1,16 +1,21 @@
 #!/usr/bin/python3
 
 import appdirs
+import base64
 import calendar
 import click
 import colored
 import json
+import itertools
 import pathlib
+import random
 import sys
+import tempfile
 from datetime import date, datetime, timedelta
-from redminelib import Redmine
 from functools import lru_cache
 from fuzzywuzzy import process as fw_process
+from pyfscache import FSCache
+from redminelib import Redmine
 from redminelib.packages import requests as redmine_requests
 from redminelib.exceptions import ResourceNotFoundError, ValidationError
 
@@ -19,13 +24,15 @@ redmine_requests.urllib3.disable_warnings()
 # Redmine connection is established lazily.
 redmine = Redmine('http://redmine')
 
+filecache = FSCache(pathlib.Path(tempfile.gettempdir()) / 'redtime.cache', minutes=5)
+
 
 class ProjectType(click.ParamType):
     name = 'project'
 
     def convert(self, value, param, ctx):
         try:
-            value = int(value)
+            value = int(value.split('#')[-1])
             return get_project(value) if value else None
         except ValueError:
             self.fail('Project is not a number', param, ctx)
@@ -38,7 +45,7 @@ class IssueType(click.ParamType):
 
     def convert(self, value, param, ctx):
         try:
-            value = int(value)
+            value = int(value.split('#')[-1])
             return get_issue(value) if value else None
         except ValueError:
             self.fail('Issue is not a number', param, ctx)
@@ -52,9 +59,9 @@ class ActivityType(click.ParamType):
     def convert(self, value, param, ctx):
         try:
             try:
-                return activity_by_id[int(value)]
+                return _activities(id=int(int(value.split('#')[-1])))
             except ValueError:
-                return activity_by_name[value.lower()]
+                return _activities(name=value.lower())
         except KeyError:
             self.fail('Activity not found', param, ctx)
 
@@ -92,7 +99,29 @@ DATE = DateType([
 today = datetime.today().date()
 month_first_day = today.replace(day=1)
 month_last_day = today.replace(
-    day=calendar.monthrange(today.year, today.day)[1])
+    day=calendar.monthrange(today.year, today.month)[1])
+
+
+class Password:
+
+    base16_chars = list(b"0123456789ABCDEF")
+
+    base16_shuffled_chars = base16_chars.copy()
+    random.shuffle(base16_shuffled_chars, lambda: 0.42)
+
+    @classmethod
+    def encrypt(cls, password):
+        encoded = base64.b16encode(password.encode('utf-8'))
+        tr = dict(zip(cls.base16_chars, cls.base16_shuffled_chars))
+
+        return bytes(map(lambda b: tr[b], encoded)).decode('utf-8')
+
+    @classmethod
+    def decrypt(cls, password):
+        encoded = password.encode('utf-8')
+        tr = dict(zip(cls.base16_shuffled_chars, cls.base16_chars))
+
+        return base64.b16decode(bytes(map(lambda b: tr[b], encoded))).decode('utf-8')
 
 
 @lru_cache()
@@ -103,6 +132,52 @@ def get_project(id):
 @lru_cache()
 def get_issue(id):
     return redmine.issue.get(id)
+
+
+@lru_cache()
+def _current_user():
+    return redmine.user.get('current', include='memberships')
+
+
+@lru_cache()
+def _activities(name=None, id=None, fuzzy=None, threshold=80):
+
+    if not hasattr(_activities, 'my_cache') is None:
+        activities = redmine.enumeration.filter(resource='time_entry_activities')
+        cache = {
+            'name': {},
+            'id': {},
+            'values': []
+        }
+        for activity in activities:
+            cache['values'].append(activity)
+            cache['name'][activity.name.lower()] = activity
+            cache['id'][activity.id] = activity
+
+        _activities.my_cache = cache
+
+    cache = _activities.my_cache
+
+    if name:
+        return cache['name'][name]
+    elif id:
+        return cache['id'][id]
+    elif fuzzy:
+        found = fw_process.extract(fuzzy, cache['values'])
+        return [fst for (fst, snd) in found if snd >= threshold]
+    else:
+        return cache['values']
+
+
+def _id_match(resource_list, num_prefix):
+    try:
+        prefix = str(int(num_prefix))
+        return sorted(
+            [res for res in resource_list if str(res.id).startswith(prefix)],
+            key=lambda res: res.id
+        )
+    except:
+        return []
 
 
 @click.group()
@@ -123,6 +198,7 @@ def cli(ctx):
 @click.argument('description', required=True)
 @click.option('--date', type=DATE, default=date.today())
 def log(project, issue, activity, hours, description, date):
+    """Create new time entry"""
     entry = redmine.time_entry.create(
         project_id=project.id if project else None,
         issue_id=issue.id if issue else None,
@@ -142,6 +218,7 @@ def log(project, issue, activity, hours, description, date):
 @click.option('--one', 'one', flag_value=True)
 @click.option('--threshold', 'threshold', type=click.FLOAT, default=80)
 def projects(name, fmt, one, threshold):
+    """Show projects"""
     projects = _projects(name, threshold)
     if one:
         projects = projects[:1]
@@ -150,8 +227,15 @@ def projects(name, fmt, one, threshold):
         print(fmt.format_map(dict(project)))
 
 
-def _projects(name, threshold):
-    projects = redmine.project.all()
+@filecache
+def _all_projects():
+    return list(redmine.project.all())
+
+
+def _projects(name=None, threshold=80, projects=None):
+    if projects is None:
+        projects = _all_projects()
+
     if name:
         found = fw_process.extract(name, projects)
         projects = [fst for (fst, snd) in found if snd >= threshold]
@@ -168,6 +252,7 @@ def _projects(name, threshold):
 @click.option('--one', 'one', flag_value=True)
 @click.option('--threshold', 'threshold', type=click.FLOAT, default=80)
 def issues(subject, fmt, one, threshold):
+    """Show issues"""
     issues = _issues(subject, threshold)
     if one:
         issues = issues[:1]
@@ -176,8 +261,15 @@ def issues(subject, fmt, one, threshold):
         print(fmt.format_map(dict(issue)))
 
 
-def _issues(subject, threshold):
-    issues = redmine.issue.all()
+@filecache
+def _all_issues():
+    return list(redmine.issue.filter(status_id='open'))
+
+
+def _issues(subject=None, threshold=80, issues=None):
+    if issues is None:
+        issues = _all_issues()
+
     if subject:
         found = fw_process.extract(subject, issues)
         issues = [fst for (fst, snd) in found if snd >= threshold]
@@ -193,20 +285,43 @@ def _issues(subject, threshold):
 @click.option('--id', 'fmt', flag_value='{id}')
 @click.option('--name', 'fmt', flag_value='{name}')
 def activities(name, fmt):
+    """Show activities"""
     if name:
-        print(fmt.format_map(dict(activity_by_name[name.lower()])))
+        print(fmt.format_map(dict(activities(name=name.lower()))))
     else:
-        for activity in activities:
+        for activity in _activities():
             print(fmt.format_map(dict(activity)))
 
 
 @cli.command()
 @click.option('--api-url', 'api_url', required=True, prompt=True)
-@click.option('--api-key', 'api_key', required=True, prompt=True)
-def configure(**kwargs):
+@click.option('--api-key', 'api_key')
+@click.option('--username', 'username')
+@click.option('--password', 'password')
+@click.option('--ask-password', 'ask_password', is_flag=True)
+def configure(api_url, api_key, username, password, ask_password):
+    """Configure redtime utility"""
+
+    cfg = {
+        'api_url': api_url
+    }
+
+    if ask_password or password or username:
+        if username is None:
+            username = click.prompt('Username')
+        if password is None:
+            password = click.prompt('Password', hide_input=True)
+
+        cfg['username'] = username
+        cfg['password'] = Password.encrypt(password)
+    else:
+        if api_key is None:
+            api_key = click.prompt('Api key')
+        cfg['api_key'] = Password.encrypt(api_key)
+
     cfg_dir.exists() or cfg_dir.mkdir(parents=True)
     with open(cfg_file, 'w') as fd:
-        json.dump(kwargs, fd)
+        json.dump(cfg, fd)
 
 
 @cli.command()
@@ -215,6 +330,7 @@ def configure(**kwargs):
 @click.option('--limit', 'limit', type=click.INT)
 @click.option('--offset', 'offset', type=click.INT)
 def overview(**kwargs):
+    """Show time entry overview"""
     def fill_blanks(from_date, to_date):
         delta = to_date - from_date
         for dt in range(1, delta.days):
@@ -264,12 +380,78 @@ def overview(**kwargs):
             reset=colored.attr('reset')))
 
     last_date = kwargs['from_date'] + timedelta(days=-1)
-    for entry in reversed(redmine.time_entry.filter(user_id=current_user.id, **kwargs)):
+    for entry in reversed(redmine.time_entry.filter(user_id=_current_user().id, **kwargs)):
         fill_blanks(last_date, entry.spent_on)
         last_date = entry.spent_on
         print_entry(entry)
 
     fill_blanks(last_date, kwargs['to_date'] + timedelta(days=1))
+
+
+@cli.command()
+@click.argument('args', nargs=-1)
+@click.option('--options', flag_value=True, help="Show completion for options")
+@click.option('--nth', type=int, help="Complete nth argument")
+def complete(args, options, nth):
+    """Show completion options for redtime command"""
+    from pprint import pprint
+    if not args:
+        if options:
+            return
+        result=[f"{c.name}:{c.short_help}" for c in cli.commands.values()]
+    else:
+        cmd = cli.commands.get(args[0])
+        if not cmd:
+            return
+
+        if options:
+            result = [f"{o}:{p.help}" for p in cmd.params for o in p.opts if isinstance(p, click.core.Option)]
+        else:
+            if nth is None:
+                sys.exit(1)  # It's too difficult
+
+            params_d = {o: p for p in cmd.params for o in p.opts}
+            params = list([p for p in cmd.params])
+
+            def _complete(param, value):
+                if param is None:
+                    return None
+                type_name = param.type.name
+
+                if type_name == "project":
+                    name_attr = 'name'
+                    projects = list(_projects())
+                    result_id = _id_match(projects, value) if value is not None else []
+                    result_name = _projects(value, projects=projects)
+                elif type_name == "issue":
+                    name_attr = 'subject'
+                    issues = list(_issues())
+                    result_id = _id_match(issues, value) if value is not None else []
+                    result_name = _issues(value, issues=issues)
+                elif type_name == "activity":
+                    name_attr = 'name'
+                    activities = _activities()
+                    result_id = _id_match(activities, value) if value is not None else []
+                    result_name = _activities(fuzzy=value)
+                else:
+                    return None
+
+                return itertools.chain(
+                    [f"{id}:{name}" for (id, name) in
+                        ((r.id, getattr(r, name_attr)) for r in result_id)],
+                    [f"{name} #{id}:{name}" for (id, name) in
+                        ((r.id, getattr(r, name_attr)) for r in result_name)]
+                )
+
+
+            result = _complete(
+                params[nth-2],
+                args[nth-1] if len(args) >= nth else None)
+
+    if result is None:
+        sys.exit(1)
+
+    print('\n'.join(list(result)))
 
 
 if __name__ == "__main__":
@@ -279,17 +461,19 @@ if __name__ == "__main__":
     try:
         with open(cfg_file) as fd:
             cfg = json.load(fd)
+
+        if 'api_key' in cfg:
+            credentials = { 'key': Password.decrypt(cfg['api_key'])}
+        else:
+            credentials = {
+                'username': cfg['username'],
+                'password': Password.decrypt(cfg['password'])
+            }
+
+
         redmine = Redmine(
-            cfg['api_url'], key=cfg['api_key'], requests={'verify': False})
+            cfg['api_url'], **credentials, requests={'verify': False})
 
-        current_user = redmine.user.get('current', include='memberships')
-
-        activities = redmine.enumeration.filter(resource='time_entry_activities')
-        activity_by_name = {}
-        activity_by_id = {}
-        for activity in activities:
-            activity_by_name[activity.name.lower()] = activity
-            activity_by_id[activity.id] = activity
         redmine_ok = True
     except Exception as e:
         redmine_ok = False
