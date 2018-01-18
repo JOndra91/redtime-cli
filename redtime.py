@@ -35,7 +35,7 @@ class ProjectType(click.ParamType):
             value = int(value.split('#')[-1])
             return get_project(value) if value else None
         except ValueError:
-            self.fail('Project is not a number', param, ctx)
+            self.fail('Project id is not a number', param, ctx)
         except ResourceNotFoundError:
             self.fail('Project not found', param, ctx)
 
@@ -48,9 +48,22 @@ class IssueType(click.ParamType):
             value = int(value.split('#')[-1])
             return get_issue(value) if value else None
         except ValueError:
-            self.fail('Issue is not a number', param, ctx)
+            self.fail('Issue id is not a number', param, ctx)
         except ResourceNotFoundError:
             self.fail('Issue not found', param, ctx)
+
+
+class TimeEntryType(click.ParamType):
+    name = 'time_entry'
+
+    def convert(self, value, param, ctx):
+        try:
+            value = int(value.split('#')[-1])
+            return redmine.time_entry.get(value) if value else None
+        except ValueError:
+            self.fail('Time entry id is not a number', param, ctx)
+        except ResourceNotFoundError:
+            self.fail('Time entry not found', param, ctx)
 
 
 class ActivityType(click.ParamType):
@@ -186,17 +199,21 @@ def cli(ctx):
     if not redmine_ok and ctx.invoked_subcommand != 'configure':
         print(
             "Check your connection to Redmine or reconfigure using "
-            "'configure' sub-command", file=sys.stderr)
+            "'configure' sub-command.", file=sys.stderr)
         sys.exit(1)
 
-# project issue activity hours comment [date]
+
 @cli.command()
 @click.argument('project', type=ProjectType(), required=False)
 @click.argument('issue', type=IssueType(), required=False)
 @click.argument('activity', type=ActivityType(), required=True)
 @click.argument('hours', type=click.FLOAT, required=True)
 @click.argument('description', required=True)
-@click.option('--date', type=DATE, default=date.today())
+@click.option('--yesterday', 'date',
+    flag_value=date.today() - timedelta(days=1),
+    help='Change date of log entry to yesterday')
+@click.option('--date', type=DATE, default=date.today(),
+    help='Change date of log entry')
 def log(project, issue, activity, hours, description, date):
     """Create new time entry"""
     entry = redmine.time_entry.create(
@@ -207,7 +224,7 @@ def log(project, issue, activity, hours, description, date):
         activity_id=activity.id,
         comments=description)
 
-    print("Issue created: #{}".format(entry))
+    print("Log created: #{}".format(entry))
 
 
 @cli.command()
@@ -225,6 +242,21 @@ def projects(name, fmt, one, threshold):
 
     for project in projects:
         print(fmt.format_map(dict(project)))
+
+
+@cli.command()
+@click.argument('time_entry', type=TimeEntryType())
+@click.option('--rm', 'action', flag_value='remove',
+    help='Remove the log entry')
+def log_entry(time_entry, action):
+    """Modifies time entry"""
+    if action == 'remove':
+        time_entry.delete()
+        print("Log removed: #{}".format(time_entry))
+    else:
+        print("No action specified", file=sys.stderr)
+        sys.exit(1)
+
 
 
 @filecache
