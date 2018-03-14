@@ -19,7 +19,7 @@ from redminelib import Redmine
 from redminelib.packages import requests as redmine_requests
 from redminelib.exceptions import ResourceNotFoundError, ValidationError
 
-redmine_requests.urllib3.disable_warnings()
+redmine_requests.packages.urllib3.disable_warnings()
 
 # Redmine connection is established lazily.
 redmine = Redmine('http://redmine')
@@ -209,7 +209,7 @@ def cli(ctx):
 @click.argument('activity', type=ActivityType(), required=True)
 @click.argument('hours', type=click.FLOAT, required=True)
 @click.argument('description', required=True)
-@click.option('--yesterday', 'date',
+@click.option('--yesterday', 'date', type=DATE,
     flag_value=date.today() - timedelta(days=1),
     help='Change date of log entry to yesterday')
 @click.option('--date', type=DATE, default=date.today(),
@@ -426,7 +426,6 @@ def overview(**kwargs):
 @click.option('--nth', type=int, help="Complete nth argument")
 def complete(args, options, nth):
     """Show completion options for redtime command"""
-    from pprint import pprint
     if not args:
         if options:
             return
