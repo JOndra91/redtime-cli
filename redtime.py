@@ -4,7 +4,7 @@ import appdirs
 import base64
 import calendar
 import click
-import colored
+import colored as colored_lib
 import json
 import itertools
 import pathlib
@@ -25,6 +25,16 @@ redmine_requests.packages.urllib3.disable_warnings()
 redmine = Redmine('http://redmine')
 
 filecache = FSCache(pathlib.Path(tempfile.gettempdir()) / 'redtime.cache', minutes=5)
+
+
+class FakeColored():
+    @staticmethod
+    def fg(*args):
+        return ''
+
+    @staticmethod
+    def attr(*args):
+        return ''
 
 
 class ProjectType(click.ParamType):
@@ -57,8 +67,11 @@ class TimeEntryType(click.ParamType):
     name = 'time_entry'
 
     def convert(self, value, param, ctx):
+        print(value, param)
         try:
+            print(value.split('#'))
             value = int(value.split('#')[-1])
+            print(value)
             return redmine.time_entry.get(value) if value else None
         except ValueError:
             self.fail('Time entry id is not a number', param, ctx)
@@ -195,7 +208,7 @@ def _id_match(resource_list, num_prefix):
 
 @click.group()
 @click.pass_context
-def cli(ctx):
+def cli(ctx=None):
     if not redmine_ok and ctx.invoked_subcommand != 'configure':
         print(
             "Check your connection to Redmine or reconfigure using "
@@ -316,7 +329,7 @@ def _issues(subject=None, threshold=80, issues=None):
 @click.option('--name-id', 'fmt', flag_value='{name}: {id}', default=True)
 @click.option('--id', 'fmt', flag_value='{id}')
 @click.option('--name', 'fmt', flag_value='{name}')
-def activities(name, fmt):
+def activities(name, fmt=True):
     """Show activities"""
     if name:
         print(fmt.format_map(dict(activities(name=name.lower()))))
@@ -441,7 +454,6 @@ def complete(args, options, nth):
             if nth is None:
                 sys.exit(1)  # It's too difficult
 
-            params_d = {o: p for p in cmd.params for o in p.opts}
             params = list([p for p in cmd.params])
 
             def _complete(param, value):
@@ -486,6 +498,8 @@ def complete(args, options, nth):
 
 
 if __name__ == "__main__":
+
+    colored = colored_lib if sys.stdout.isatty() else FakeColored()
 
     cfg_dir = pathlib.Path(appdirs.user_config_dir('redtime-cli'))
     cfg_file = cfg_dir / 'config.json'
