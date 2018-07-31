@@ -67,11 +67,8 @@ class TimeEntryType(click.ParamType):
     name = 'time_entry'
 
     def convert(self, value, param, ctx):
-        print(value, param)
         try:
-            print(value.split('#'))
             value = int(value.split('#')[-1])
-            print(value)
             return redmine.time_entry.get(value) if value else None
         except ValueError:
             self.fail('Time entry id is not a number', param, ctx)
@@ -227,17 +224,31 @@ def cli(ctx=None):
     help='Change date of log entry to yesterday')
 @click.option('--date', type=DATE, default=date.today(),
     help='Change date of log entry')
-def log(project, issue, activity, hours, description, date):
+@click.option('--days', type=click.INT, default=1,
+    help='Repeat log entry for given amount of days')
+@click.option('--weekend', type=click.BOOL, default=False, flag_value=True,
+    help='Enable weekend logging when amount of days is more than one')
+def log(project, issue, activity, hours, description, date, days, weekend):
     """Create new time entry"""
-    entry = redmine.time_entry.create(
-        project_id=project.id if project else None,
-        issue_id=issue.id if issue else None,
-        spent_on=date,
-        hours=hours,
-        activity_id=activity.id,
-        comments=description)
 
-    print("Log created: #{}".format(entry))
+    n_days = 0
+    while n_days < days:
+        entry_date = date + timedelta(days=n_days)
+        n_days += 1
+
+        if days > 1 and not weekend and entry_date.isoweekday() > 5:
+            days += 1
+            continue
+
+        entry = redmine.time_entry.create(
+            project_id=project.id if project else None,
+            issue_id=issue.id if issue else None,
+            spent_on=entry_date,
+            hours=hours,
+            activity_id=activity.id,
+            comments=description)
+
+        print("Log created: {} - #{}".format(entry_date, entry))
 
 
 @cli.command()
