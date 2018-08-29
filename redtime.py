@@ -147,6 +147,16 @@ class Password:
         return base64.b16decode(bytes(map(lambda b: tr[b], encoded))).decode('utf-8')
 
 
+def date_range(start, end):
+    if end is None:
+        end = start
+
+    date = start
+    while date <= end:
+        yield date
+        date += timedelta(days=1)
+
+
 @lru_cache()
 def get_project(id):
     return redmine.project.get(id)
@@ -224,20 +234,16 @@ def cli(ctx=None):
     help='Change date of log entry to yesterday')
 @click.option('--date', type=DATE, default=date.today(),
     help='Change date of log entry')
-@click.option('--days', type=click.INT, default=1,
-    help='Repeat log entry for given amount of days')
-@click.option('--weekend', type=click.BOOL, default=False, flag_value=True,
-    help='Enable weekend logging when amount of days is more than one')
-def log(project, issue, activity, hours, description, date, days, weekend):
+@click.option('--until-date', type=DATE,
+    help='Repeat log entry until given date (inclusive)')
+@click.option('--weekdays', type=click.BOOL, default=False, flag_value=True,
+    help='Enable weekend logging with --until-date option')
+def log(project, issue, activity, hours, description, date, until_date, weekdays):
     """Create new time entry"""
 
-    n_days = 0
-    while n_days < days:
-        entry_date = date + timedelta(days=n_days)
-        n_days += 1
-
-        if days > 1 and not weekend and entry_date.isoweekday() > 5:
-            days += 1
+    skip_weekdays = not weekdays and until_date is not None
+    for entry_date in date_range(date, until_date):
+        if skip_weekdays and entry_date.isoweekday() > 5:
             continue
 
         entry = redmine.time_entry.create(
