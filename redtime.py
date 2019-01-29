@@ -100,6 +100,9 @@ class DateType(click.ParamType):
         if isinstance(value, date):
             return value
 
+        if value.isnumeric():
+            return datetime.today().date().replace(day=int(value))
+
         for fmt in self.formats:
             try:
                 return datetime.strptime(value, fmt).date()
@@ -159,7 +162,7 @@ def date_range(start, end):
 
 @lru_cache()
 def get_project(id):
-    return redmine.project.get(id)
+    return redmine.project.get(id, include='time_entry_activities')
 
 
 @lru_cache()
@@ -445,10 +448,11 @@ def overview(**kwargs):
 
 
 @cli.command()
+@click.pass_context
 @click.argument('args', nargs=-1)
 @click.option('--options', flag_value=True, help="Show completion for options")
 @click.option('--nth', type=int, help="Complete nth argument")
-def complete(args, options, nth):
+def complete(ctx, args, options, nth):
     """Show completion options for redtime command"""
     if not args:
         if options:
@@ -460,6 +464,7 @@ def complete(args, options, nth):
             return
 
         cmd_params = list([p for p in cmd.params if isinstance(p, click.core.Argument)])
+        cmd_param_map = {p.name:p for p in cmd_params}
         cmd_options = {o:p for p in cmd.params for o in p.opts if isinstance(p, click.core.Option)}
 
         if options:
@@ -468,31 +473,42 @@ def complete(args, options, nth):
             if nth is None:
                 sys.exit(1)  # It's too difficult
 
-            def _complete_param(param, value, previous_value):
+            def _convert_param(key, value):
+                param = cmd_param_map[key]
+                return param.type.convert(value, param, ctx)
+
+            def _complete_param(param, value_map):
                 if param is None:
                     return None
-                if value and value.startswith('-'):
-                    return None
-                if previous_value and previous_value.startswith('-'):
-                    return None
+
                 param_name = param.name
                 param_type = param.type.name
 
-                if param_name == 'project':
+                value = value_map.get(param_name)
+
+                try:
+                    project = _convert_param('project', value_map.get('project'))
+                except:
+                    pass
+
+                result_id = []
+                result_name = []
+                result_other = []
+
+                if param_type == 'project':
                     name_attr = 'name'
                     projects = list(_projects())
                     result_id = _id_match(projects, value)
                     result_name = _projects(value, projects=projects)
-                elif param_name == 'issue':
+                elif param_type == 'issue':
                     name_attr = 'subject'
-                    project = get_project(int(previous_value.split(':')[-1]))
                     result_id = _id_match(_issues(project_id=project.id), value)
                     result_name = _issues(subject=value, project_id=project.id)
-                elif param_name == 'activity':
+                elif param_type == 'activity':
                     name_attr = 'name'
-                    activities = _activities()
-                    result_id = _id_match(activities, value) if value is not None else []
-                    result_name = _activities(fuzzy=value)
+                    activities = project.time_entry_activities
+                    for activity in activities:
+                        result_other.append(type('Activity', (object,), activity))
                 elif param_name == 'hours':
                     return [f"{hours}:hours" for hours in [2, 4, 6, 8]]
                 elif param_name == 'description':
@@ -502,7 +518,7 @@ def complete(args, options, nth):
                 else:
                     return None
 
-                result = set(itertools.chain(result_id, result_name))
+                result = set(itertools.chain(result_id, result_name, result_other))
 
                 return itertools.chain(
                     [f"{name}\\:{id}:{name}" for (id, name) in
@@ -515,14 +531,25 @@ def complete(args, options, nth):
                 except IndexError:
                     return None
 
-            if nth < 2 or nth >= len(cmd_params):
+            skip = 0
+            nth_param = 0
+            arg_map = {}
+            for arg in args[1:]:
+                if skip > 0:
+                    skip -= 1
+                elif arg.startswith('-'):
+                    skip = cmd_options[args].nargs
+                    nth -= skip
+                else:
+                    arg_map[cmd_params[nth_param].name] = arg
+                    nth_param += 1
+
+            nth -= 2  # Ignore the command and subcommand
+            if nth < 0 or nth >= len(cmd_params):
                 sys.exit(1)
 
             # TODO: Handle options
-            result = _complete_param(
-                cmd_params[nth-2],
-                _get_or_none(args, nth - 1),
-                _get_or_none(args, nth - 2))
+            result = _complete_param(cmd_params[nth], arg_map)
 
     if result is None:
         sys.exit(1)
