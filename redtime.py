@@ -24,7 +24,7 @@ redmine_requests.packages.urllib3.disable_warnings()
 # Redmine connection is established lazily.
 redmine = Redmine('http://redmine')
 
-filecache = FSCache(pathlib.Path(tempfile.gettempdir()) / 'redtime.cache', minutes=5)
+filecache = FSCache(pathlib.Path(tempfile.gettempdir()) / 'redtime.cache', minutes=15)
 
 
 class FakeColored():
@@ -42,7 +42,7 @@ class ProjectType(click.ParamType):
 
     def convert(self, value, param, ctx):
         try:
-            value = int(value.split('#')[-1])
+            value = int(value.split(':')[-1])
             return get_project(value) if value else None
         except ValueError:
             self.fail('Project id is not a number', param, ctx)
@@ -55,7 +55,7 @@ class IssueType(click.ParamType):
 
     def convert(self, value, param, ctx):
         try:
-            value = int(value.split('#')[-1])
+            value = int(value.split(':')[-1])
             return get_issue(value) if value else None
         except ValueError:
             self.fail('Issue id is not a number', param, ctx)
@@ -68,7 +68,7 @@ class TimeEntryType(click.ParamType):
 
     def convert(self, value, param, ctx):
         try:
-            value = int(value.split('#')[-1])
+            value = int(value.split(':')[-1])
             return redmine.time_entry.get(value) if value else None
         except ValueError:
             self.fail('Time entry id is not a number', param, ctx)
@@ -82,7 +82,7 @@ class ActivityType(click.ParamType):
     def convert(self, value, param, ctx):
         try:
             try:
-                return _activities(id=int(int(value.split('#')[-1])))
+                return _activities(id=int(int(value.split(':')[-1])))
             except ValueError:
                 return _activities(name=value.lower())
         except KeyError:
@@ -203,6 +203,9 @@ def _activities(name=None, id=None, fuzzy=None, threshold=80):
 
 
 def _id_match(resource_list, num_prefix):
+    if num_prefix is None:
+        return []
+
     try:
         prefix = str(int(num_prefix))
         return sorted(
@@ -288,8 +291,7 @@ def log_entry(time_entry, action):
         sys.exit(1)
 
 
-
-@filecache
+@lru_cache()
 def _all_projects():
     return list(redmine.project.all())
 
@@ -301,10 +303,9 @@ def _projects(name=None, threshold=80, projects=None):
     if name:
         found = fw_process.extract(name, projects)
         projects = [fst for (fst, snd) in found if snd >= threshold]
-    else:
-        projects = sorted(projects, key=lambda x: x.name)
 
     return projects
+
 
 @cli.command()
 @click.argument('subject', required=False)
@@ -312,10 +313,9 @@ def _projects(name=None, threshold=80, projects=None):
 @click.option('--id', 'fmt', flag_value='{id}')
 @click.option('--subject', 'fmt', flag_value='{subject}')
 @click.option('--one', 'one', flag_value=True)
-@click.option('--threshold', 'threshold', type=click.FLOAT, default=80)
-def issues(subject, fmt, one, threshold):
+def issues(subject, fmt, one):
     """Show issues"""
-    issues = _issues(subject, threshold)
+    issues = _issues(subject)
     if one:
         issues = issues[:1]
 
@@ -324,21 +324,15 @@ def issues(subject, fmt, one, threshold):
 
 
 @filecache
-def _all_issues():
-    return list(redmine.issue.filter(status_id='open'))
+def _issues(subject=None, project_id=None):
+    kwargs = {
+        'status_id': 'open',
+        'project_id': project_id,
+        'subject': '~{}'.format(subject) if subject else None,
+        'limit': 50,
+    }
 
-
-def _issues(subject=None, threshold=80, issues=None):
-    if issues is None:
-        issues = _all_issues()
-
-    if subject:
-        found = fw_process.extract(subject, issues)
-        issues = [fst for (fst, snd) in found if snd >= threshold]
-    else:
-        issues = sorted(issues, key=lambda x: x.subject)
-
-    return issues
+    return list(redmine.issue.filter(**kwargs))
 
 
 @cli.command()
@@ -408,14 +402,14 @@ def overview(**kwargs):
         cfill = 'white' if entry.id else 'grey_35'
 
         def show_project(project):
-            return "{name} #{id}".format_map(project)
+            return "{name}:{id}".format_map(project)
 
         def show_issue(issue):
             issue = get_issue(issue['id'])
-            return "{subject} #{id}".format_map(issue)
+            return "{subject}:{id}".format_map(issue)
 
         def show_activity(activity):
-            return f"- {activity['name'].lower()} #{activity['id']}"
+            return f"- {activity['name'].lower()}:{activity['id']}"
 
         if hasattr(entry, 'issue'):
             if hasattr(entry, 'project'):
@@ -434,7 +428,7 @@ def overview(**kwargs):
             slash=slash,
             issue=show_issue(entry.issue) if hasattr(entry, 'issue') else '',
             comment=entry.comments,
-            entry=f" #{entry.id}" if entry.id else '',
+            entry=f":{entry.id}" if entry.id else '',
             centry=colored.fg('gold_1'),
             cactivity=colored.fg('turquoise_4'),
             activity=show_activity(entry.activity) if hasattr(entry, 'activity') else '',
@@ -465,48 +459,70 @@ def complete(args, options, nth):
         if not cmd:
             return
 
+        cmd_params = list([p for p in cmd.params if isinstance(p, click.core.Argument)])
+        cmd_options = {o:p for p in cmd.params for o in p.opts if isinstance(p, click.core.Option)}
+
         if options:
-            result = [f"{o}:{p.help}" for p in cmd.params for o in p.opts if isinstance(p, click.core.Option)]
+            result = [f"{o}:{p.help}" for (o,p) in cmd_options.items()]
         else:
             if nth is None:
                 sys.exit(1)  # It's too difficult
 
-            params = list([p for p in cmd.params])
-
-            def _complete(param, value):
+            def _complete_param(param, value, previous_value):
                 if param is None:
                     return None
-                type_name = param.type.name
+                if value and value.startswith('-'):
+                    return None
+                if previous_value and previous_value.startswith('-'):
+                    return None
+                param_name = param.name
+                param_type = param.type.name
 
-                if type_name == "project":
+                if param_name == 'project':
                     name_attr = 'name'
                     projects = list(_projects())
-                    result_id = _id_match(projects, value) if value is not None else []
+                    result_id = _id_match(projects, value)
                     result_name = _projects(value, projects=projects)
-                elif type_name == "issue":
+                elif param_name == 'issue':
                     name_attr = 'subject'
-                    issues = list(_issues())
-                    result_id = _id_match(issues, value) if value is not None else []
-                    result_name = _issues(value, issues=issues)
-                elif type_name == "activity":
+                    project = get_project(int(previous_value.split(':')[-1]))
+                    result_id = _id_match(_issues(project_id=project.id), value)
+                    result_name = _issues(subject=value, project_id=project.id)
+                elif param_name == 'activity':
                     name_attr = 'name'
                     activities = _activities()
                     result_id = _id_match(activities, value) if value is not None else []
                     result_name = _activities(fuzzy=value)
+                elif param_name == 'hours':
+                    return [f"{hours}:hours" for hours in [2, 4, 6, 8]]
+                elif param_name == 'description':
+                    return ["...:description"]
+                elif param_type == 'date':
+                    return ["{:%Y-%m-%d}:{}".format(datetime.today(), param_name)]
                 else:
                     return None
 
+                result = set(itertools.chain(result_id, result_name))
+
                 return itertools.chain(
-                    [f"{id}:{name}" for (id, name) in
-                        ((r.id, getattr(r, name_attr)) for r in result_id)],
-                    [f"{name} #{id}:{name}" for (id, name) in
-                        ((r.id, getattr(r, name_attr)) for r in result_name)]
+                    [f"{name}\\:{id}:{name}" for (id, name) in
+                        ((r.id, getattr(r, name_attr)) for r in result)]
                 )
 
+            def _get_or_none(indexable, index):
+                try:
+                    return indexable[index]
+                except IndexError:
+                    return None
 
-            result = _complete(
-                params[nth-2],
-                args[nth-1] if len(args) >= nth else None)
+            if nth < 2 or nth >= len(cmd_params):
+                sys.exit(1)
+
+            # TODO: Handle options
+            result = _complete_param(
+                cmd_params[nth-2],
+                _get_or_none(args, nth - 1),
+                _get_or_none(args, nth - 2))
 
     if result is None:
         sys.exit(1)
