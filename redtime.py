@@ -81,10 +81,12 @@ class ActivityType(click.ParamType):
 
     def convert(self, value, param, ctx):
         try:
+            activities = ctx.params['project'].time_entry_activities or _get_activities()
+
             try:
-                return _activities(id=int(int(value.split(':')[-1])))
+                return _with_activities(activities, id=int(int(value.split(':')[-1])))
             except ValueError:
-                return _activities(name=value.lower())
+                return _with_activities(activities, name=value.lower())
         except KeyError:
             self.fail('Activity not found', param, ctx)
 
@@ -175,34 +177,44 @@ def _current_user():
     return redmine.user.get('current', include='memberships')
 
 
-@lru_cache()
-def _activities(name=None, id=None, fuzzy=None, threshold=80):
+def _with_activities(activities, name=None, id=None, fuzzy=None, threshold=80):
+    indexed = {
+        'name': {},
+        'id': {},
+        'values': []
+    }
 
-    if not hasattr(_activities, 'my_cache') is None:
-        activities = redmine.enumeration.filter(resource='time_entry_activities')
-        cache = {
-            'name': {},
-            'id': {},
-            'values': []
-        }
-        for activity in activities:
-            cache['values'].append(activity)
-            cache['name'][activity.name.lower()] = activity
-            cache['id'][activity.id] = activity
-
-        _activities.my_cache = cache
-
-    cache = _activities.my_cache
+    for activity in activities:
+        indexed['values'].append(activity)
+        indexed['name'][activity['name'].lower()] = activity
+        indexed['id'][activity['id']] = activity
 
     if name:
-        return cache['name'][name]
+        return indexed['name'][name]
     elif id:
-        return cache['id'][id]
+        return indexed['id'][id]
     elif fuzzy:
-        found = fw_process.extract(fuzzy, cache['values'])
+        found = fw_process.extract(fuzzy, indexed['values'])
         return [fst for (fst, snd) in found if snd >= threshold]
     else:
-        return cache['values']
+        return indexed['values']
+
+
+@lru_cache()
+def _get_activities():
+    def mk_dict(activity):
+        return {
+            "id": activity.id,
+            "name": activity.name,
+        }
+    return list(map(
+        mk_dict,
+        redmine.enumeration.filter(resource='time_entry_activities')))
+
+
+@lru_cache()
+def _activities(name=None, id=None, fuzzy=None, threshold=80):
+    return _with_activities(_get_activities(), name, id, fuzzy, threshold)
 
 
 def _id_match(resource_list, num_prefix):
@@ -257,7 +269,7 @@ def log(project, issue, activity, hours, description, date, until_date, weekdays
             issue_id=issue.id if issue else None,
             spent_on=entry_date,
             hours=hours,
-            activity_id=activity.id,
+            activity_id=activity['id'],
             comments=description)
 
         print("Log created: {} - #{}".format(entry_date, entry))
