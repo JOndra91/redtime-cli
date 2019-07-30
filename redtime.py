@@ -546,7 +546,7 @@ def complete(ctx, args, options, nth):
             skip = 0
             nth_param = 0
             arg_map = {}
-            for arg in args[1:]:
+            for arg in args[1:nth - 1]:
                 if skip > 0:
                     skip -= 1
                 elif arg.startswith('-'):
