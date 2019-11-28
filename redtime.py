@@ -81,7 +81,12 @@ class ActivityType(click.ParamType):
 
     def convert(self, value, param, ctx):
         try:
-            activities = ctx.params['project'].time_entry_activities or _get_activities()
+            if 'project' in ctx.params:
+                activities = ctx.params['project'].time_entry_activities
+            elif 'issue' in ctx.params:
+                activities = get_project(ctx.params['issue'].project.id).time_entry_activities
+            else:
+                activities = _get_activities()
 
             try:
                 return _with_activities(activities, id=int(int(value.split(':')[-1])))
@@ -293,14 +298,29 @@ def projects(name, fmt, one, threshold):
 
 
 @cli.command()
-@click.argument('time_entry', type=TimeEntryType())
+@click.argument('time_entries', type=TimeEntryType(), nargs=-1)
 @click.option('--rm', 'action', flag_value='remove',
     help='Remove the log entry')
-def log_entry(time_entry, action):
+@click.option('--project', 'project', type=ProjectType())
+@click.option('--issue', 'issue', type=IssueType())
+@click.option('--activity', 'activity', type=ActivityType())
+def log_entry(time_entries, action, project, issue, activity):
     """Modifies time entry"""
     if action == 'remove':
-        time_entry.delete()
-        print("Log removed: #{}".format(time_entry))
+        for time_entry in time_entries:
+            time_entry.delete()
+            print("Log removed: #{}".format(time_entry))
+    elif any((project, issue, activity)):
+        for time_entry in time_entries:
+            if project:
+                time_entry.project_id = project.id
+            if issue:
+                time_entry.issue_id = issue.id
+            if activity:
+                time_entry.activity_id = activity['id']
+
+            time_entry.save()
+            print("Log updated: #{}".format(time_entry))
     else:
         print("No action specified", file=sys.stderr)
         sys.exit(1)
@@ -397,7 +417,7 @@ def configure(api_url, api_key, username, password, ask_password):
 
 @cli.command()
 @click.option('--from-date', 'from_date', type=DATE, default=month_first_day)
-@click.option('--to-date', 'to_date', type=DATE, default=today)
+@click.option('--to-date', 'to_date', type=DATE, default=month_last_day)
 @click.option('--limit', 'limit', type=click.INT)
 @click.option('--offset', 'offset', type=click.INT)
 def overview(**kwargs):
