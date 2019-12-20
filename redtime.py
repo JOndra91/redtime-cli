@@ -260,13 +260,31 @@ def cli(ctx=None):
 @click.option('--until-date', type=DATE,
     help='Repeat log entry until given date (inclusive)')
 @click.option('--weekdays', type=click.BOOL, default=False, flag_value=True,
-    help='Enable weekend logging with --until-date option')
-def log(project, issue, activity, hours, description, date, until_date, weekdays):
+    help='Allow weekend logging')
+@click.option('--max-day-hours', type=click.INT, default=8,
+    help='Max hours per day (entries exceeding this limit will be ignored)')
+def log(project, issue, activity, hours, description, date, until_date, weekdays, max_day_hours):
     """Create new time entry"""
 
     skip_weekdays = not weekdays and until_date is not None
     for entry_date in date_range(date, until_date):
+
         if skip_weekdays and entry_date.isoweekday() > 5:
+            continue
+
+        entries = redmine.time_entry.filter(
+            user_id=_current_user().id,
+            from_date=entry_date,
+            to_date=entry_date)
+
+        already_logged = sum([e.hours for e in entries])
+        total_hours = hours + already_logged
+
+        if total_hours > max_day_hours:
+            print("{fg}Log skipped: {}{reset} - hours ({}) > max hours ({})".format(
+                entry_date, total_hours, max_day_hours,
+                fg=colored.fg('yellow'),
+                reset=colored.attr('reset')))
             continue
 
         entry = redmine.time_entry.create(
@@ -277,7 +295,10 @@ def log(project, issue, activity, hours, description, date, until_date, weekdays
             activity_id=activity['id'],
             comments=description)
 
-        print("Log created: {} - #{}".format(entry_date, entry))
+        print("{fg}Log created: {}{reset} - #{}".format(
+            entry_date, entry,
+            fg=colored.fg('green'),
+            reset=colored.attr('reset')))
 
 
 @cli.command()
