@@ -599,25 +599,30 @@ def complete(ctx, args, options, nth):
                 except IndexError:
                     return None
 
+            def _complete_option(option, nth_arg):
+                return []  # Screw it!
+
             skip = 0
-            nth_param = 0
+            nth_arg = 0
             arg_map = {}
+            option = None
+            option_nargs = 0
             for arg in args[1:nth - 1]:
-                if skip > 0:
-                    skip -= 1
+                if option_nargs > 0:
+                    option_nargs -= 1
                 elif arg.startswith('-'):
-                    skip = cmd_options[args].nargs
-                    nth -= skip
+                    option = cmd_options[arg]
+                    option_nargs = option.nargs
                 else:
-                    arg_map[cmd_params[nth_param].name] = arg
-                    nth_param += 1
+                    arg_map[cmd_params[nth_arg].name] = arg
+                    nth_arg += 1
 
-            nth -= 2  # Ignore the command and subcommand
-            if nth < 0 or nth >= len(cmd_params):
-                sys.exit(1)
-
-            # TODO: Handle options
-            result = _complete_param(cmd_params[nth], arg_map)
+            if option_nargs > 0:
+                result = _complete_option(option, _get_or_none(args, nth - 1))
+            elif nth_arg >= 0 and nth_arg < len(cmd_params):
+                result = _complete_param(cmd_params[nth_arg], arg_map)
+            else:
+                result = None
 
     if not result:
         sys.exit(1)
