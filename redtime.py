@@ -252,7 +252,7 @@ def cli(ctx=None):
 @click.argument('activity', type=ActivityType(), required=True)
 @click.argument('hours', type=click.FLOAT, required=True)
 @click.argument('description', required=True)
-@click.option('--yesterday', 'date', type=DATE,
+@click.option('--yesterday', '-y', 'date', type=DATE,
     flag_value=date.today() - timedelta(days=1),
     help='Change date of log entry to yesterday')
 @click.option('--date', type=DATE, default=date.today(),
@@ -521,7 +521,22 @@ def complete(ctx, args, options, nth):
         cmd_options = {o:p for p in cmd.params for o in p.opts if isinstance(p, click.core.Option)}
 
         if options:
-            result = [f"{o}:{p.help}" for (o,p) in cmd_options.items()]
+            result = []
+            for opt in set(cmd_options.values()):
+                opt_desc = []
+                if opt.help:
+                    opt_desc.append(opt.help)
+
+                if opt.default is not None and opt.show_default:
+                    opt_desc.append("(default: {opt.default})")
+
+                opt_desc = ' '.join(opt_desc)
+
+                for opt_name in set(opt.opts):
+                    result.append(f"{opt_name}:{opt_desc}")
+                if opt.secondary_opts:
+                    raise NotImplementedError(
+                        "Secondary options (e.g. --flag/--no-flag) are not supported")
         else:
             if nth is None:
                 sys.exit(1)  # It's too difficult
@@ -604,7 +619,7 @@ def complete(ctx, args, options, nth):
             # TODO: Handle options
             result = _complete_param(cmd_params[nth], arg_map)
 
-    if result is None:
+    if not result:
         sys.exit(1)
 
     print('\n'.join(list(result)))
