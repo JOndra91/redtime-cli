@@ -588,39 +588,63 @@ def complete(ctx, args, options, nth):
 
                 result = set(itertools.chain(result_id, result_name, result_other))
 
+                import re
+                def safe_str(str):
+                    return re.sub(r':', r'\:', str)
+
                 return itertools.chain(
-                    [f"{name}\\:{id}:{name}" for (id, name) in
+                    [f"{safe_str(name)}\\:{id}:{safe_str(name)}" for (id, name) in
                         ((r.id, getattr(r, name_attr)) for r in result)]
                 )
 
             def _get_or_none(indexable, index):
                 try:
                     return indexable[index]
-                except IndexError:
+                except (IndexError, KeyError):
                     return None
 
             def _complete_option(option, nth_arg):
                 return []  # Screw it!
+
+            def mark_nth(args, nth):
+                nth -= 1 # Skip first cmd line arguments
+                for i in range(1, nth):
+                    yield (_get_or_none(args, i), False)
+                yield (_get_or_none(args, nth), True)
 
             skip = 0
             nth_arg = 0
             arg_map = {}
             option = None
             option_nargs = 0
-            for arg in args[1:nth - 1]:
-                if option_nargs > 0:
+
+            complete_option = None
+            complete_param = None
+
+            for arg, complete in mark_nth(args, nth):
+                if arg is None:
+                    complete_param = _get_or_none(cmd_params, nth_arg)
+                    break
+                elif option_nargs > 0:
                     option_nargs -= 1
                 elif arg.startswith('-'):
-                    option = cmd_options[arg]
+                    option = _get_or_none(cmd_options, arg)
+                    if option is None:
+                        break
                     option_nargs = option.nargs
+                    if complete:
+                        complete_option = option
                 else:
                     arg_map[cmd_params[nth_arg].name] = arg
+                    if complete:
+                        complete_param = cmd_params[nth_arg]
+                        break
                     nth_arg += 1
 
-            if option_nargs > 0:
-                result = _complete_option(option, _get_or_none(args, nth - 1))
-            elif nth_arg >= 0 and nth_arg < len(cmd_params):
-                result = _complete_param(cmd_params[nth_arg], arg_map)
+            if complete_option:
+                result = None
+            elif complete_param:
+                result = _complete_param(complete_param, arg_map)
             else:
                 result = None
 
